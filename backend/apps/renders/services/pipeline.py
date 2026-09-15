@@ -216,6 +216,8 @@ def coerce_v12_payload(payload):
             "style": clip.get("style") or None,
             "volume": clip.get("volume"),
             "duration_hint": duration_hint,
+            # v1.3: OpenReel text overlay descriptor (passthrough)
+            "openreel_text": clip.get("openreel_text"),
         })
     if not clips_out:
         raise RenderError("payload has no clips")
@@ -231,8 +233,33 @@ def normalize_clip(video, clip, staging_dir, index, aspect, clip_settings):
 
     *video* may be None for HD-section clips.  Returns (output_path,
     duration).  Raises RenderError on ffmpeg failure.
+
+    v1.3: a clip carrying ``openreel_text`` gets its overlay converted to
+    animated drawtext fragment(s) here (inside the task thread).
     """
     out_path = staging_dir / f"clip_{index}.mp4"
+
+    extra_drawtexts = None
+    overlay = clip.get("openreel_text")
+    if overlay and isinstance(overlay, dict) and overlay.get("text"):
+        try:
+            from . import openreel as openreel_svc
+
+            frag, _tf = openreel_svc.build_animated_drawtext(
+                text=overlay.get("text"),
+                style=overlay.get("style"),
+                transform=overlay.get("transform"),
+                animation=overlay.get("animation"),
+                aspect=aspect,
+                staging_dir=str(staging_dir),
+                clip_offset=float(overlay.get("offset") or 0.0),
+                clip_duration=float(overlay.get("duration") or 0.0) or None,
+                prefix=f"or_{index}_",
+            )
+            if frag:
+                extra_drawtexts = [frag]
+        except Exception as exc:  # noqa: BLE001 - overlay must not kill render
+            logger.warning("OpenReel overlay conversion failed: %s", exc)
 
     if clip.get("hd_path") is not None:
         src_path = clip["hd_path"]
@@ -271,6 +298,7 @@ def normalize_clip(video, clip, staging_dir, index, aspect, clip_settings):
         subtitle=clip.get("subtitle") or None,
         volume=clip.get("volume"),
         duration_hint=clip.get("duration_hint"),
+        extra_drawtexts=extra_drawtexts,
     )
 
     rc, tail = _run_plain(cmd)

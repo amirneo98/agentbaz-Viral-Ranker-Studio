@@ -275,6 +275,7 @@ def normalize_clip_cmd(
     duration_hint=None,
     out_path=None,
     staging_dir=None,
+    extra_drawtexts=None,
 ):
     """Return the partial command description for one normalized clip.
 
@@ -355,6 +356,10 @@ def normalize_clip_cmd(
             if sub_file:
                 staging.append(sub_file)
 
+    # ---- v1.3: OpenReel text overlays (prebuilt animated fragments) ----
+    if extra_drawtexts:
+        drawtexts.extend(extra_drawtexts)
+
     parts.append("[base]" + ",".join(drawtexts) + "[vout]")
 
     # ---- audio ----
@@ -407,6 +412,7 @@ def build_normalize_cmd(
     subtitle=None,
     volume=None,
     duration_hint=None,
+    extra_drawtexts=None,
 ):
     """Assemble the complete per-clip ffmpeg argv (without the binary).
 
@@ -428,6 +434,7 @@ def build_normalize_cmd(
         video_height_pct, background_blur,
         aspect=aspect, blur_sigma=blur_sigma, style=style,
         subtitle=subtitle, volume=volume, duration_hint=duration_hint,
+        extra_drawtexts=extra_drawtexts,
     )
 
     if hd_input:

@@ -22,3 +22,8 @@ bgm/*.wav
 
 # OS
 .DS_Store
+
+# OpenReel editor fork — huge vendored repo with build artifacts
+third_party/openreel-video/node_modules/
+third_party/openreel-video/dist/
+third_party/openreel-video/.pnpm-store/

@@ -26,9 +26,12 @@ from apps.videos.services.probe import ProbeError, probe_media
 
 logger = logging.getLogger(__name__)
 
-#: Prefer an already-mp4 stream at or below 720p, then any <=720p stream,
-#: then anything (worst case: we transcode down).
+#: Prefer a merged mp4 video+audio pair at or below 720p (YouTube et al.
+#: only serve high resolutions as separate video/audio streams), then any
+#: <=720p stream, then anything (worst case: we transcode down).
 PROXY_FORMAT_SELECTOR = (
+    "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/"
+    "bestvideo[height<=720]+bestaudio/"
     "best[height<=720][ext=mp4]/best[height<=720]/best"
 )
 
@@ -77,40 +80,82 @@ def _is_playable_proxy(path):
 
 
 def _transcode_to_proxy(src, dest, task_id):
-    """ffmpeg: scale to <=720 height, H.264 + AAC in a faststart mp4."""
+    """ffmpeg: scale to <=720 height, H.264 + AAC in a faststart mp4.
+
+    Prefers NVENC on machines with an NVIDIA GPU; falls back to libx264
+    when NVENC is unavailable or fails.
+    """
     import subprocess
 
-    cmd = [
-        "ffmpeg", "-nostdin", "-hide_banner", "-y",
-        "-i", str(src),
-        "-vf", "scale=-2:'min(720,ih)':flags=bicubic",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
-        "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "128k",
-        "-movflags", "+faststart",
-        str(dest),
-    ]
-    try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=FFMPEG_TIMEOUT
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise ProxyError(f"proxy transcode timed out after {FFMPEG_TIMEOUT}s") from exc
-    except OSError as exc:
-        raise ProxyError(f"failed to execute ffmpeg: {exc}") from exc
-    if proc.returncode != 0 or not dest.is_file() or dest.stat().st_size == 0:
-        tail = (proc.stderr or "")[-800:]
-        raise ProxyError(f"proxy transcode failed: ffmpeg exit "
-                         f"{proc.returncode}.\n{tail}")
+    def build(encoder):
+        if encoder == "h264_nvenc":
+            venc = ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "23"]
+        else:
+            venc = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "22"]
+        return [
+            "ffmpeg", "-nostdin", "-hide_banner", "-y",
+            "-i", str(src),
+            "-vf", "scale=-2:'min(720,ih)':flags=bicubic",
+            *venc,
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "128k",
+            "-movflags", "+faststart",
+            str(dest),
+        ]
+
+    last_err = ""
+    for encoder in ("h264_nvenc", "libx264"):
+        try:
+            proc = subprocess.run(
+                build(encoder), capture_output=True, text=True,
+                timeout=FFMPEG_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired as exc:
+            last_err = f"proxy transcode timed out after {FFMPEG_TIMEOUT}s"
+            continue
+        except OSError as exc:
+            raise ProxyError(f"failed to execute ffmpeg: {exc}") from exc
+        if proc.returncode == 0 and dest.is_file() and dest.stat().st_size > 0:
+            return
+        last_err = (f"proxy transcode failed with {encoder}: ffmpeg exit "
+                    f"{proc.returncode}.\n{(proc.stderr or '')[-800:]}")
+        if dest.exists():
+            dest.unlink()
+    raise ProxyError(last_err or "proxy transcode failed")
 
 
 def run_proxy_download(task, url):
     """Task-worker entry point: download + normalize a 720p proxy.
 
-    Returns ``{"proxy_url": "/media/previews/<uuid>.mp4", "task_id": ...}``
-    on success (also stored on the Task result).
+    Returns ``{"proxy_url": "/media/previews/<hash>.mp4", "task_id": ...}``
+    on success (also stored on the Task result). A URL-hash cache makes
+    repeat fetches of the same source instant.
     """
+    import hashlib
+    import os
+
     set_progress(task.id, P_STARTED)
+
+    # -- cache hit: same source URL already proxied -----------------------
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+    cache_dir = _proxy_dir() / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cached = cache_dir / f"{digest}.mp4"
+    filename = f"{digest}.mp4"
+    stable = _proxy_dir() / filename
+    if cached.is_file() and _is_playable_proxy(cached):
+        if not stable.is_file():
+            try:
+                os.link(cached, stable)
+            except OSError:
+                shutil.copy2(cached, stable)
+        set_progress(task.id, P_DONE)
+        return {
+            "proxy_url": f"/media/previews/{filename}",
+            "task_id": str(task.id),
+            "cached": True,
+        }
+
     staging = _staging_dir(task.id)
     try:
         from apps.videos.services.downloader import YtDlpDownloader
@@ -134,17 +179,23 @@ def run_proxy_download(task, url):
         downloaded = Path(result.path)
         set_progress(task.id, P_DOWNLOAD_END)
 
-        name = f"{uuid.uuid4()}.mp4"
-        dest = _proxy_dir() / name
         if _is_playable_proxy(downloaded):
-            shutil.move(str(downloaded), str(dest))
+            shutil.move(str(downloaded), str(cached))
         else:
             set_progress(task.id, P_TRANSCODE)
-            _transcode_to_proxy(downloaded, dest, task.id)
+            _transcode_to_proxy(downloaded, cached, task.id)
+
+        # expose a stable, content-addressed filename (served path)
+        if stable.exists():
+            stable.unlink()
+        try:
+            os.link(cached, stable)
+        except OSError:
+            shutil.copy2(cached, stable)
 
         set_progress(task.id, P_DONE)
         return {
-            "proxy_url": f"/media/previews/{name}",
+            "proxy_url": f"/media/previews/{filename}",
             "task_id": str(task.id),
         }
     except RuntimeError as exc:

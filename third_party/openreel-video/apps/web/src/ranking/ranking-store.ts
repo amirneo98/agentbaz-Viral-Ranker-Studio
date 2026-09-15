@@ -27,6 +27,7 @@ import {
   fetchStreamAsFile,
   fetchStreamInfo,
   pollTaskUntilSettled,
+  resolvePlayableMedia,
   submitOpenReelRender,
 } from "./ranking-api";
 import type {
@@ -228,17 +229,73 @@ export const useRankingStore = create<RankingState>((set, get) => ({
 
     const streamUrl = absoluteMediaUrl(info.data.stream_url);
     if (!streamUrl || info.data.stream_type === "none") {
-      const message = `No direct stream for this URL. ${BACKEND_OPEN_HINT}`;
-      set({ ingest: { phase: "error", message } });
-      return { ok: false, message };
+      // No direct stream for the browser: fall back to the server-side
+      // 720p proxy, which is hosted by our backend (always CORS-safe).
+      set({ ingest: { phase: "loading", message: "Preparing playable preview…" } });
+      const resolved = await resolvePlayableMedia(
+        trimmed,
+        (message: string) => set({ ingest: { phase: "loading", message } }),
+      );
+      if (!resolved.mediaUrl) {
+        const message = resolved.error || `No playable stream for this URL.`;
+        set({ ingest: { phase: "error", message } });
+        return { ok: false, message };
+      }
+      set({ ingest: { phase: "loading", message: "Downloading preview…" } });
+      const rawName = info.data.title?.trim() || `ranking-${Date.now()}`;
+      const safeName = rawName.replace(/[\\/:*?"<>|]+/g, " ").slice(0, 80).trim();
+      const { file, error } = await fetchStreamAsFile(resolved.mediaUrl, safeName);
+      if (!file) {
+        const message = error || `Could not download the stream.`;
+        set({ ingest: { phase: "error", message } });
+        return { ok: false, message };
+      }
+      set({ ingest: { phase: "loading", message: "Importing into media library…" } });
+      const imported = await useProjectStore.getState().importMedia(file);
+      if (!imported.success || !imported.actionId) {
+        const message = imported.error?.message || "Media import failed.";
+        set({ ingest: { phase: "error", message } });
+        return { ok: false, message };
+      }
+      const mediaId2 = imported.actionId;
+      tagImportedMedia(mediaId2, {
+        originalUrl: trimmed,
+        mediaName: info.data.title,
+        file,
+      });
+      get().addEntryForMedia(mediaId2, {
+        title: info.data.title || safeName,
+        sourceUrl: trimmed,
+        mediaName: info.data.title || safeName,
+      });
+      const message2 = `Imported "${info.data.title || safeName}" as a 720p proxy.`;
+      set({ ingest: { phase: "ready", message: message2 } });
+      return { ok: true, message: message2 };
     }
 
     set({ ingest: { phase: "loading", message: "Downloading 720p proxy…" } });
     const rawName = info.data.title?.trim() || `ranking-${Date.now()}`;
     const safeName = rawName.replace(/[\\/:*?"<>|]+/g, " ").slice(0, 80).trim();
-    const { file, error } = await fetchStreamAsFile(streamUrl, safeName);
+    const direct = await fetchStreamAsFile(streamUrl, safeName);
+    let file = direct.file;
+    let usedProxy = false;
     if (!file) {
-      const message = error || `Could not download the stream. ${BACKEND_OPEN_HINT}`;
+      // Direct stream was blocked (CORS) or empty — fall back to the
+      // server-side 720p proxy so ingestion always succeeds.
+      set({ ingest: { phase: "loading", message: "Preparing playable preview…" } });
+      const resolved = await resolvePlayableMedia(
+        trimmed,
+        (message: string) => set({ ingest: { phase: "loading", message } }),
+      );
+      if (resolved.mediaUrl) {
+        set({ ingest: { phase: "loading", message: "Downloading preview…" } });
+        const proxied = await fetchStreamAsFile(resolved.mediaUrl, safeName);
+        file = proxied.file ?? undefined;
+        usedProxy = true;
+      }
+    }
+    if (!file) {
+      const message = direct.error || `Could not download the stream. ${BACKEND_OPEN_HINT}`;
       set({ ingest: { phase: "error", message } });
       return { ok: false, message };
     }
@@ -262,7 +319,7 @@ export const useRankingStore = create<RankingState>((set, get) => ({
       sourceUrl: trimmed,
       mediaName: info.data.title || safeName,
     });
-    const message = `Imported "${info.data.title || safeName}" as a 720p proxy.`;
+    const message = `Imported "${info.data.title || safeName}"${usedProxy ? " via server proxy" : ""}.`;
     set({ ingest: { phase: "ready", message } });
     return { ok: true, message };
   },

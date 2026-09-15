@@ -114,6 +114,72 @@ export function fetchStreamInfo(url: string): Promise<ApiResult<StreamInfo>> {
   return postJson<StreamInfo>("/api/stream-info/", { url }, 60000);
 }
 
+/**
+ * Create a server-side 720p proxy download for any source URL.
+ * Returns the pollable task; the task result carries proxy_url
+ * (served by OUR backend, so it is always CORS-safe for the browser).
+ */
+export function submitProxyDownload(
+  url: string,
+): Promise<ApiResult<{ task_id: string }>> {
+  return postJson<{ task_id: string }>("/api/proxy/", { url }, 60000);
+}
+
+interface ProxyTaskResult {
+  status: string;
+  progress?: number;
+  error?: string;
+  result?: { proxy_url?: string } | null;
+}
+
+/**
+ * Resolve any source URL to a browser-playable, CORS-safe media file URL
+ * hosted by our backend (720p proxy). Polls the proxy task until it
+ * settles and returns the proxy URL on success.
+ */
+export async function resolvePlayableMedia(
+  url: string,
+  onProgress?: (message: string) => void,
+): Promise<{ mediaUrl?: string; error?: string }> {
+  onProgress?.("Preparing playable preview…");
+  const task = await submitProxyDownload(url);
+  if (!task.ok || !task.data?.task_id) {
+    return { error: task.error || "Could not start the proxy download." };
+  }
+  const taskId = task.data.task_id;
+  // Poll up to ~4 minutes (proxy downloads are usually <20s).
+  const deadline = Date.now() + 240_000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 1500));
+    const resp = await fetch(`${RANKING_API_BASE}/api/tasks/${taskId}/`);
+    if (!resp.ok) {
+      return { error: `Task polling failed (${resp.status}).` };
+    }
+    const data = (await resp.json()) as ProxyTaskResult;
+    if (data.status === "SUCCESS") {
+      const proxyUrl = data.result?.proxy_url;
+      if (!proxyUrl) {
+        return { error: "Proxy task finished without a media URL." };
+      }
+      return { mediaUrl: absoluteMediaUrl(proxyUrl) ?? undefined };
+    }
+    if (data.status === "FAILED") {
+      return {
+        error: data.error || "The server could not fetch this source.",
+      };
+    }
+    const pct = typeof data.progress === "number"
+      ? Math.round(data.progress)
+      : undefined;
+    onProgress?.(
+      typeof pct === "number"
+        ? `Fetching preview… ${pct}%`
+        : "Fetching preview…",
+    );
+  }
+  return { error: "Proxy download timed out." };
+}
+
 /** HD section fetch fallback — reuses the FETCH task polling path. */
 export function fetchSectionDownload(
   clipId: string,

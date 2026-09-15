@@ -808,6 +808,8 @@ class ProxyServiceTests(TestCase):
             proxy_svc.run_proxy_download(self.task, "https://x.com/v")
         self.assertEqual(
             captured["selector"],
+            "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/"
+            "bestvideo[height<=720]+bestaudio/"
             "best[height<=720][ext=mp4]/best[height<=720]/best",
         )
 

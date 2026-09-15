@@ -53,6 +53,21 @@ class ProxyError(Exception):
     """Fatal proxy-download failure surfaced on the Task as error."""
 
 
+def proxy_cache_path(url):
+    """Path of the cached 720p proxy for *url* — or None when absent.
+
+    Read-only helper for ``GET /api/render/urls/preview/``: it only checks
+    the sha256(url)-addressed cache and never downloads anything.
+    """
+    import hashlib
+
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+    cached = _proxy_dir() / "cache" / f"{digest}.mp4"
+    if cached.is_file() and cached.stat().st_size > 0:
+        return cached
+    return None
+
+
 def _proxy_dir():
     directory = Path(settings.MEDIA_ROOT) / "previews"
     directory.mkdir(parents=True, exist_ok=True)

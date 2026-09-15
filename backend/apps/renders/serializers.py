@@ -7,6 +7,8 @@ accepted and passed through to the stored payload.  ``build_payload``
 only emits the new keys when they were actually supplied, so stored v1.1
 payloads (and their exact settings dict) are unchanged.
 """
+from urllib.parse import urlsplit
+
 from rest_framework import serializers
 
 from apps.bgm.models import BgmTrack
@@ -277,3 +279,166 @@ def build_payload(validated_data):
     if validated_data.get("master_title_style") is not None:
         payload["master_title_style"] = validated_data["master_title_style"]
     return payload
+
+
+# ---------------------------------------------------------------------------
+# POST /api/render/urls/ — full-quality render straight from source links
+# ---------------------------------------------------------------------------
+
+#: Sources are downloaded server-side with the default (best quality)
+#: format selector; a couple of sane caps guard against pathological input.
+MAX_SOURCE_URL_LENGTH = 2000
+MAX_URL_CLIPS = 50
+
+
+def _clean_source_url(url):
+    """Validate one clip source_url; returns (url, error_message)."""
+    if not isinstance(url, str):
+        return None, "source_url is required"
+    url = url.strip()
+    if not url:
+        return None, "source_url must not be blank"
+    if len(url) > MAX_SOURCE_URL_LENGTH:
+        return None, (
+            f"source_url must be at most {MAX_SOURCE_URL_LENGTH} characters"
+        )
+    parts = urlsplit(url)
+    if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
+        return None, "source_url must be an absolute http:// or https:// URL"
+    return url, None
+
+
+class UrlClipSerializer(serializers.Serializer):
+    """One ranked clip referenced by its remote source URL."""
+
+    source_url = serializers.CharField(
+        required=False, allow_blank=True, max_length=MAX_SOURCE_URL_LENGTH
+    )
+    rank = serializers.IntegerField(min_value=1)
+    start = serializers.FloatField(
+        required=False, allow_null=True, min_value=0.0, default=None
+    )
+    end = serializers.FloatField(required=False, allow_null=True, default=None)
+    title = serializers.CharField(
+        required=False, allow_blank=True, max_length=500, default=""
+    )
+    subtitle = serializers.CharField(
+        required=False, allow_blank=True, max_length=500, default=""
+    )
+    style = serializers.DictField(required=False, allow_null=True, default=None)
+    volume = serializers.FloatField(
+        required=False, allow_null=True, min_value=0.0, max_value=3.0,
+        default=None,
+    )
+
+    def validate(self, attrs):
+        url, error = _clean_source_url(attrs.get("source_url"))
+        if error:
+            raise serializers.ValidationError({"source_url": error})
+        attrs["source_url"] = url
+
+        start = attrs.get("start")
+        end = attrs.get("end")
+        if start is None or end is None:
+            raise serializers.ValidationError(
+                {"start": "source_url clips require start and end"}
+            )
+        if end <= start:
+            raise serializers.ValidationError(
+                {"end": "end must be strictly greater than start"}
+            )
+        return attrs
+
+
+class UrlRenderRequestSerializer(serializers.Serializer):
+    """Request shape for POST /api/render/urls/."""
+
+    master_title = serializers.CharField(
+        required=False, allow_blank=True, max_length=200, default=""
+    )
+    aspect = serializers.ChoiceField(
+        required=False, choices=["9:16", "16:9"], default="9:16"
+    )
+    clips = UrlClipSerializer(many=True)
+    settings = RenderSettingsSerializer(required=False)
+
+    def validate_clips(self, clips):
+        if not clips:
+            raise serializers.ValidationError("at least one clip is required")
+        if len(clips) > MAX_URL_CLIPS:
+            raise serializers.ValidationError(
+                f"at most {MAX_URL_CLIPS} clips are allowed per render"
+            )
+        ranks = [c["rank"] for c in clips]
+        if len(set(ranks)) != len(ranks):
+            raise serializers.ValidationError(
+                f"clip ranks must be unique (got {sorted(ranks)})"
+            )
+        return clips
+
+    def validate(self, attrs):
+        settings_dict = attrs.get("settings") or {}
+        bgm_id = settings_dict.get("bgm_id")
+        if bgm_id is not None:
+            try:
+                BgmTrack.objects.get(pk=bgm_id)
+            except BgmTrack.DoesNotExist:
+                raise serializers.ValidationError(
+                    {"settings": {"bgm_id": f"bgm track {bgm_id} does not exist"}}
+                )
+        return attrs
+
+
+def build_urls_payload(validated_data):
+    """Convert URL-render serializer output into the stored job payload.
+
+    Mirrors ``build_payload`` (same defaults/clamping) but every clip
+    carries ``source_url`` + its trim window instead of ``video_id``; the
+    worker resolves URLs to full-quality files before rendering.
+    """
+    settings_in = validated_data.get("settings") or {}
+    settings_out = {
+        "video_height_pct": settings_in.get(
+            "video_height_pct",
+            settings_in.get("video_scale_pct", 80),
+        ),
+        "background_blur": settings_in.get("background_blur", True),
+        "bgm_id": settings_in.get("bgm_id"),
+        "bgm_volume": settings_in.get("bgm_volume", 0.4),
+    }
+    if settings_in.get("video_scale_pct") is not None:
+        settings_out["video_scale_pct"] = settings_in["video_scale_pct"]
+    if settings_in.get("blur_sigma") is not None:
+        settings_out["blur_sigma"] = float(settings_in["blur_sigma"])
+    if settings_in.get("ducking_threshold") is not None:
+        settings_out["ducking_threshold"] = float(
+            settings_in["ducking_threshold"]
+        )
+    if settings_in.get("ducking_ratio") is not None:
+        settings_out["ducking_ratio"] = float(settings_in["ducking_ratio"])
+    if settings_in.get("aspect"):
+        settings_out["aspect"] = settings_in["aspect"]
+
+    clips_out = []
+    for clip in validated_data["clips"]:
+        entry = {
+            "rank": clip["rank"],
+            "source_url": clip["source_url"],
+            "start": float(clip["start"]),
+            "end": float(clip["end"]),
+            "title": (clip.get("title") or "")[:MAX_TITLE_CHARS],
+        }
+        if clip.get("subtitle"):
+            entry["subtitle"] = clip["subtitle"][:MAX_SUBTITLE_CHARS]
+        if clip.get("style") is not None:
+            entry["style"] = clip["style"]
+        if clip.get("volume") is not None:
+            entry["volume"] = float(clip["volume"])
+        clips_out.append(entry)
+
+    return {
+        "master_title": (validated_data.get("master_title") or ""),
+        "aspect": validated_data["aspect"],
+        "clips": clips_out,
+        "settings": settings_out,
+    }

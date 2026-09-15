@@ -126,6 +126,10 @@ def coerce_v12_payload(payload):
     Returns (aspect, clips, settings_dict, master_title, master_style) where
     each clip dict carries: src_path (hd) or video_id, rank, start, end,
     title, subtitle, style, volume, duration_hint.
+
+    v1.4: a clip may carry ``full_file`` — a pre-downloaded FULL-quality
+    source (resolved by the urls render worker).  It behaves exactly like
+    the source_url fallback (trim window applies) but skips the download.
     """
     settings_dict = dict(payload.get("settings") or {})
     clips_in = list(payload.get("clips") or [])
@@ -167,8 +171,10 @@ def coerce_v12_payload(payload):
 
     clips_out = []
     for clip in clips_in:
+        full_path = _resolve_hd_path(clip.get("full_file"))
         hd_path = _resolve_hd_path(clip.get("hd_file"))
-        if hd_path is None and clip.get("video_id") is None:
+        if hd_path is None and full_path is None \
+                and clip.get("video_id") is None:
             # Studio clip without a fetched HD section: fall back to a
             # server-side full download of its source_url (v1.1 path),
             # reusing the fetch service. This runs at render time inside
@@ -188,6 +194,12 @@ def coerce_v12_payload(payload):
             media = fetch_svc._ensure_mp4(result.path)
             hd_path = media
             # full download: honor the trim window
+            start = _as_float(clip.get("start"), 0.0)
+            end = _as_float(clip.get("end"))
+            needs_trim = True
+        elif full_path is not None and hd_path is None:
+            # v1.4: pre-downloaded full-quality source — trim applies.
+            hd_path = full_path
             start = _as_float(clip.get("start"), 0.0)
             end = _as_float(clip.get("end"))
             needs_trim = True
@@ -394,8 +406,15 @@ def build_final_cmd(
 # Entry point
 # ---------------------------------------------------------------------------
 
-def run_render(task, job_pk):
-    """Full render pipeline; returns the task result dict on success."""
+def run_render(task, job_pk, normalize_window=None):
+    """Full render pipeline; returns the task result dict on success.
+
+    *normalize_window* — optional ``(start, end)`` progress percentages for
+    the per-clip normalization phase (used by the urls render worker, which
+    reserves 0-30 for downloads: normalize 30-85, concat 85-100).  When
+    omitted the v1.1/v1.2 windows apply, so every other caller keeps its
+    exact progress behaviour.
+    """
     try:
         job = RenderJob.objects.get(pk=job_pk)
     except RenderJob.DoesNotExist:
@@ -432,7 +451,10 @@ def run_render(task, job_pk):
 
         # ---------------- phase 1: normalize clips ----------------------
         all_hd = all(c["hd_path"] is not None for c in clips)
-        if all_hd:
+        if normalize_window is not None:
+            # caller-managed window (urls render: 30-85)
+            phase_start, phase_end = normalize_window
+        elif all_hd:
             phase_start, phase_end = HD_NORMALIZE_START, HD_NORMALIZE_END
         else:
             phase_start, phase_end = PHASE_NORMALIZE_START, PHASE_NORMALIZE_END

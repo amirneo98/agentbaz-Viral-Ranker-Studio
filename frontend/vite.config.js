@@ -2,8 +2,8 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 const proxy = {
-  '/api': { target: 'http://localhost:8000', changeOrigin: true },
-  '/media': { target: 'http://localhost:8000', changeOrigin: true }
+  '/api': { target: process.env.VITE_PROXY_TARGET || 'http://localhost:8000', changeOrigin: true },
+  '/media': { target: process.env.VITE_PROXY_TARGET || 'http://localhost:8000', changeOrigin: true }
 }
 
 // https://vitejs.dev/config/

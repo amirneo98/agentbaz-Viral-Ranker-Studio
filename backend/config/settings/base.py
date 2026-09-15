@@ -26,6 +26,7 @@ INSTALLED_APPS = [
     "apps.videos",
     "apps.renders",
     "apps.bgm",
+    "apps.studio",
 ]
 
 MIDDLEWARE = [

@@ -1,14 +1,27 @@
 # Viral Ranker Studio
 
-A self-hosted, GPU-accelerated studio for building **vertical (9:16) video-ranking
-compilations** from any downloadable source. Paste a video URL, trim and arrange the
-clips into a ranked countdown, pick background music, and render a polished
-1080×1920 master with numbered title cards — NVENC hardware encoding when an
-NVIDIA GPU is available, automatic CPU fallback when it is not.
+A self-hosted, GPU-accelerated studio for building **video-ranking
+compilations in both 9:16 (Shorts/Reels) and 16:9 (long-form)** from any
+downloadable source. Paste a video URL, preview it instantly without a full
+download, trim and arrange the clips into a ranked countdown with per-clip
+typography (fonts, colors, stroke, shadow, badges), pick background music,
+and render a polished master with numbered title cards — NVENC hardware
+encoding when an NVIDIA GPU is available, automatic CPU fallback when it is
+not.
+
+## Quick install (one line)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/amirneo98/agentbaz-Viral-Ranker-Studio/main/install.sh | bash
+```
+
+Then open http://localhost:3000 — the script installs Docker if needed,
+detects your NVIDIA GPU, builds the containers, and waits for the backend
+health check. (Set `INSTALL_DIR=...` to choose another location.)
 
 Everything runs locally with Docker Compose: a Django REST backend orchestrates
 `yt-dlp` downloads and an `ffmpeg` render pipeline, while an nginx-served React
-dashboard drives the whole workflow from your browser.
+studio drives the whole workflow from your browser.
 
 ```
                                    ┌─────────────────────────────────────────────┐

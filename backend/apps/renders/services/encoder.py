@@ -22,6 +22,16 @@ NVENC_ARGS = [
     "-maxrate", "12M",
     "-bufsize", "24M",
 ]
+#: v1.2: for 16:9 1080p output the CQ mode benefits from an explicit
+#: average-bitrate hint (8 Mbps keeps fast motion clean at 1920x1080).
+NVENC_ARGS_169 = [
+    "-c:v", "h264_nvenc",
+    "-preset", "p4",
+    "-cq", "19",
+    "-b:v", "8M",
+    "-maxrate", "12M",
+    "-bufsize", "24M",
+]
 X264_ARGS = [
     "-c:v", "libx264",
     "-preset", "medium",
@@ -45,8 +55,17 @@ class EncoderError(Exception):
 def swap_to_x264(cmd):
     """Return a copy of *cmd* with the NVENC block replaced by libx264."""
     start = _codec_start(cmd)
-    end = start + len(NVENC_ARGS)
+    end = start + _nvenc_block_len(cmd)
     return list(cmd[:start]) + list(X264_ARGS) + list(cmd[end:])
+
+
+def _nvenc_block_len(cmd):
+    """Length of the NVENC argument block starting at the -c:v index."""
+    start = _codec_start(cmd)
+    for block in (NVENC_ARGS, NVENC_ARGS_169):
+        if cmd[start:start + len(block)] == list(block):
+            return len(block)
+    return len(NVENC_ARGS)
 
 
 def _codec_start(cmd):

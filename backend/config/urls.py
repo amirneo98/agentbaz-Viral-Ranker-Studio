@@ -11,6 +11,7 @@ urlpatterns = [
     path("api/", include("apps.videos.urls")),
     path("api/", include("apps.renders.urls")),
     path("api/", include("apps.bgm.urls")),
+    path("api/", include("apps.studio.urls")),
 ]
 
 if settings.DEBUG:

@@ -9,6 +9,28 @@ and render a polished master with numbered title cards — NVENC hardware
 encoding when an NVIDIA GPU is available, automatic CPU fallback when it is
 not.
 
+## Editors
+
+Two live browser editors are vendored under `third_party/` and share the same
+backend:
+
+| Editor | Port | Notes |
+| --- | --- | --- |
+| **OpenVideo** (`third_party/openvideo-editor`) | 3001 | Next.js + PixiJS/WebCodecs, ranking-optimized panel |
+| **OpenReel** (`third_party/openreel-video`) | 5173 | React/Vite, ranking panel + 26 text animation presets |
+| Legacy studio (`frontend/`) | 3000 | v1.2 two-column studio |
+
+Start everything at once:
+
+```bash
+./start-all.sh
+```
+
+Workflow (link-based, no manual downloading): paste a URL → the backend builds
+a cached 720p proxy for **instant live preview** while you edit → the final
+render is produced server-side from the **full-quality** source with NVENC via
+`POST /api/render/urls/`.
+
 ## Quick install (one line)
 
 ```bash
@@ -104,6 +126,39 @@ docker compose up -d --build
 
 Open **http://localhost:3000** — the dashboard is served by nginx and talks to
 the API on the same host at `http://localhost:8000`.
+
+### The three interfaces
+
+| Interface | Port | What it is |
+| --- | --- | --- |
+| **OpenVideo editor** | `3001` | The ranking-optimised live editor (recommended). Ranked clip list, URL→720p proxy ingestion, rank text overlays with animations, live rank rail, *Export → Server Render*. |
+| **OpenReel editor** | `5173` | The full-featured live editor (all-purpose: motion design, captions, colour, transitions) with the same ranking panel. |
+| Legacy studio | `3000` | The original v1.2 dashboard (URL fetch + form-based render). |
+
+Start the backend **and** both editors with one command:
+
+```bash
+./start-all.sh
+```
+
+The editors are vendored forks under `third_party/` (MIT / OpenVideo licence).
+They are Next.js / Vite dev servers; `start-all.sh` covers their launch and
+health-checks every port. Individual launch:
+
+```bash
+# OpenVideo editor (port 3001)
+cd third_party/openvideo-editor && COREPACK_ENABLE_STRICT=0 npx -y pnpm@10 run dev --port 3001
+
+# OpenReel editor (port 5173)
+cd third_party/openreel-video && COREPACK_ENABLE_STRICT=0 npx -y pnpm@10 --filter @openreel/web dev
+```
+
+**How live editing works without downloading anything in the browser:** pasting
+a link makes the backend fetch a **720p proxy** (`POST /api/proxy/`, cached by
+URL hash — the second fetch of the same link is instant). The editor previews
+and edits that proxy, while the final render is produced **server-side from the
+original full-quality source** (`POST /api/render/urls/`) with NVENC, so the
+exported file is never limited by preview quality.
 
 Minimal `.env` (the shipped file already works locally):
 

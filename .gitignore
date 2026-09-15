@@ -27,3 +27,5 @@ bgm/*.wav
 third_party/openreel-video/node_modules/
 third_party/openreel-video/dist/
 third_party/openreel-video/.pnpm-store/
+third_party/openvideo-editor/node_modules/
+third_party/openvideo-editor/.next/
